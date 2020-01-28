@@ -9,3 +9,6 @@ except DistributionNotFound:
     __version__ = 'unknown'
 finally:
     del get_distribution, DistributionNotFound
+
+from .crispresso import Crispresso2
+from .plots import *

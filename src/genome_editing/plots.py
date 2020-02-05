@@ -12,6 +12,85 @@ import variant_calling
 
 
 
+def plot_variants(output_file, sample_to_results, dependencies = []):
+    """
+    Displays all detected variants along the amplicon for multiple samples.
+    SNPs Insertions and deletions are depicted as separate subplots.
+    """
+    if isinstance(output_file, str):
+        outfile = Path(output_file)
+    outfile.parent.mkdir(parents = True, exist_ok = True)
+    def __dump():
+        
+        mycolorcycle = cycler(color=["r", "b", "c", "g", "m", "y", "k"])
+        figure, axes = plt.subplots(3, figsize=(14, 8), sharex=True)
+
+        for i, ydict in enumerate([ys, non_reference, ys_coverage]):
+            axes[i].set_prop_cycle(cy)
+            for name in ydict:
+                y = ydict[name]
+                if i == 2:
+                    xi = x[y != 0]
+                    yi = y[y != 0]
+                else:
+                    xi = x
+                    yi = y
+                axes[i].plot(
+                    xi,
+                    yi,
+                    label=name.replace("_", " "),
+                    linestyle=linestyles[i],
+                    marker=markerstyles[i],
+                )
+                to_df["position"].extend(xi)
+                to_df["value"].extend(yi)
+                to_df["label"].extend([ylabels[i]] * len(xi))
+            ylim = axes[i].get_ylim()
+            axes[i].plot(
+                [
+                    pam_positions["R175H_1"] - xoffset,
+                    pam_positions["R175H_1"] - xoffset,
+                ],
+                ylim,
+                color="orange",
+                label="PAM 1",
+            )
+            axes[i].plot(
+                [
+                    pam_positions["R175H_2"] - xoffset,
+                    pam_positions["R175H_2"] - xoffset,
+                ],
+                ylim,
+                color="olive",
+                label="PAM 2",
+            )
+            axes[i].set(ylabel=ylabels[i])
+        plt.xlim([-75, 75])
+        plt.gca().invert_xaxis()
+        ticks, labels = plt.xticks()
+        newticks = np.sort(
+            np.array(
+                [int(t) for t in ticks]
+                + [7675085 - xoffset, 7675086 - xoffset, 7675087 - xoffset]
+            )
+        )
+        ticklabels = (
+            [str(int(-t)) for t in ticks if t < (7675086 - xoffset)]
+            + ["", "R175", ""]
+            + [str(-t) for t in ticks if t > (7675086 - xoffset)]
+        )
+        plt.xticks(newticks, ticklabels)
+        plt.legend(loc="right")
+        plt.xlabel("Position")
+        plt.tight_layout()
+        figure.savefig(str(outfile1))
+        dfout = pd.DataFrame(to_df)
+
+
+
+
+    return ppg.FileGeneratingJob(outfile, __dump).depends_on(dependencies)
+
 def compare_mutation_distribution_nice(
     sample_to_results, outputfile_prefix, callertype, region, genome, dependencies=[]
     ):
@@ -28,6 +107,7 @@ def compare_mutation_distribution_nice(
     pam_positions = {"R175H_1": 7675100, "R175H_2": 7675103}
 
     def __plot():
+        #first combine caller results
         columns = [
             "sample",
             "ID",
@@ -75,6 +155,8 @@ def compare_mutation_distribution_nice(
                 ]
                 combine_dfs.append(next_df)
             dfs[name] = pd.concat(combine_dfs)
+        #now we have the caller results in a df per sample
+        
         # plot_histograms
         x = np.arange(region[1], region[2], 1)
         # offset the x

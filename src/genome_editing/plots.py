@@ -8,7 +8,6 @@ import numpy as np
 import scipy as sp
 import cutadapt
 import cutadapt.align
-import variant_calling
 
 
 

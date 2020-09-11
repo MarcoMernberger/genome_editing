@@ -66,11 +66,10 @@ class Crispresso2:
     ):
         inputfiles = raw_sample.get_aligner_input_filenames()
         if name is None:
-            name = f"{raw_sample.name}_{sgrna}"
+            name = f"{raw_sample.name.replace('.', '_')}_{sgrna}"
         outputfolder = output_folder
         if outputfolder is None:
             outputfolder = f"results/crispresso_{self.get_version()}/{raw_sample.name}"
-
         if isinstance(outputfolder, str):
             outputfolder = Path(outputfolder)
         output_file = f"CRISPResso_on_{name}"
@@ -123,9 +122,11 @@ class Crispresso2:
                     ["--fastq_r2", str(inputfiles[1]),]
                 )
             for k in options:
-                command.extend([k, str(options[k])])
+                if len(str(options[k])) == 0:
+                    command.append(k)
+                else:
+                    command.extend([k, str(options[k])])
             time.sleep(random.random() * 2)
-            print(command)
             container = self.client.containers.run(
                 self.image,
                 volumes=self.volumes,
@@ -133,7 +134,6 @@ class Crispresso2:
                 command=command,
                 detach=True,
             )
-            self.print_help()
             with open(outputfolder / (output_file + ".pylog"), "w") as outp:
                 for line in container.logs(stream=True):
                     line = line.strip().decode("utf-8")
@@ -141,5 +141,5 @@ class Crispresso2:
                     outp.write(line)
 
         job = ppg.FileGeneratingJob(outfile, __dump).depends_on(deps)
-        # job.cores_needed = 17
+        job.cores_needed = 17
         return job

@@ -12,3 +12,5 @@ finally:
 
 from .crispresso import Crispresso2
 from .plots import *
+from .amplican import Amplican
+from .pycheck import PysamCheck

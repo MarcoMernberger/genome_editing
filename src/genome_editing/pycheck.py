@@ -3,7 +3,7 @@
 
 """pysam.py: Contains ...."""
 
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Union
 from mbf_align.lanes import Sample
 from mbf_genomes import GenomeBase
 from pysam import AlignedSegment
@@ -20,6 +20,8 @@ import collections
 import mbf_r
 import rpy2.robjects as ro
 import rpy2.robjects.numpy2ri as numpy2ri
+import subprocess
+import tempfile
 
 __author__ = "Marco Mernberger"
 __copyright__ = "Copyright (c) 2020 Marco Mernberger"
@@ -30,6 +32,9 @@ class PysamCheck:
     """The idea is to use pysam to check the cigar strings of alinged reads to
     extract the editing event"""
 
+    # TODO: get the modified sequence --> by drawing the pairwise space numbers
+    # TODO: ignore all events outside the range
+
     def __init__(
         self,
         primers_or_range_by_amplicon_id: Dict[str, List[str]],
@@ -39,8 +44,11 @@ class PysamCheck:
         mapping_qality_filter: int = 20,
         single_read_sufficient: bool = False,
         types_to_consider: List[str] = None,
+        name: str = None,
     ):
         self.name = "PysamCheck"
+        if name is not None:
+            self.name = name
         self.primers_or_range_by_amplicon = primers_or_range_by_amplicon_id  # events within primer ranges are not reported
         self.event_window_by_amplicon = (
             event_window_by_amplicon  # reads need to span the event window
@@ -54,16 +62,25 @@ class PysamCheck:
 
     def get_dependencies(self) -> List[Job]:
         deps = [
-            ppg.FunctionInvariant("map_pairwise_space_to_reference_space", self.map_pairwise_space_to_reference_space),
+            ppg.FunctionInvariant(
+                "map_pairwise_space_to_reference_space",
+                self.map_pairwise_space_to_reference_space,
+            ),
             ppg.FunctionInvariant("evaluate_cigar", self.evaluate_cigar),
             ppg.FunctionInvariant("tally_reads", self.tally_reads),
-            ppg.FunctionInvariant("map_events_to_reference_space", self.map_events_to_reference_space),
+            ppg.FunctionInvariant(
+                "map_events_to_reference_space", self.map_events_to_reference_space
+            ),
             ppg.FunctionInvariant("filter_events", self.filter_events),
             ppg.FunctionInvariant("extract_events", self.extract_events),
-            ppg.FunctionInvariant("__check_reads_spanning_windows", self.__check_reads_spanning_windows),
+            ppg.FunctionInvariant(
+                "__check_reads_spanning_windows", self.__check_reads_spanning_windows
+            ),
             ppg.FunctionInvariant("__set_primer_range", self.__set_primer_range),
-            ppg.FunctionInvariant("_prepare_reference_lookup", self._prepare_reference_lookup),
-            self.genome.download_genome()
+            ppg.FunctionInvariant(
+                "_prepare_reference_lookup", self._prepare_reference_lookup
+            ),
+            self.genome.download_genome(),
         ]
         return deps
 
@@ -76,14 +93,18 @@ class PysamCheck:
                 lookup[name] = self.genome.get_genome_sequence(name, 0, length)
             return lookup
 
-        job = ppg.AttributeLoadingJob(f"{self.name}__lookup", self, "_ref_lookup", __do_lookup).depends_on(self.get_dependencies())
+        job = ppg.AttributeLoadingJob(
+            f"{self.name}__lookup", self, "_ref_lookup", __do_lookup
+        ).depends_on(self.get_dependencies())
         return job
 
     def __set_primer_range(self):
         """set the range in which we report events"""
 
         def __set_range_from_primers():
-            if isinstance(next(iter(self.primers_or_range_by_amplicon.values()))[0], str):
+            if isinstance(
+                next(iter(self.primers_or_range_by_amplicon.values()))[0], str
+            ):
                 ranges: Dict[str, Tuple(int)] = {}
                 for amplicon in self.primers_or_range_by_amplicon:
                     primer_forward, primer_reverse = self.primers_or_range_by_amplicon[
@@ -97,7 +118,12 @@ class PysamCheck:
             else:
                 return self.primers_or_range_by_amplicon
 
-        job = ppg.AttributeLoadingJob(f"{self.name}__ranges_by_amplicon", self, "ranges_by_amplicon", __set_range_from_primers)
+        job = ppg.AttributeLoadingJob(
+            f"{self.name}__ranges_by_amplicon",
+            self,
+            "ranges_by_amplicon",
+            __set_range_from_primers,
+        )
         job.depends_on(self.get_dependencies())
         job.depends_on(self._prepare_reference_lookup())
         return job
@@ -114,7 +140,9 @@ class PysamCheck:
             check = check and (min_pos < min(interval) & max_pos > max(interval))
         return check
 
-    def extract_events(self, reads: Tuple[AlignedSegment], counts: int):
+    def extract_events(
+        self, reads: Tuple[AlignedSegment], counts: int
+    ) -> Union[DataFrame, None]:
         """Turn a read or read pair into a set of events."""
         cigars = []
         aln_pos_start = []
@@ -156,15 +184,28 @@ class PysamCheck:
     def map_events_to_reference_space(self, df: DataFrame, reads: List[AlignedSegment]):
         """Convert all event coordinates to reference space"""
         ref_start, ref_end = [], []
+        query_start = []
+        query_end = []
         for _, row in df.iterrows():
-            read = reads[int(row["read_id"][1])-1]
+            read = reads[int(row["read_id"][1]) - 1]
             start, end = self.map_pairwise_space_to_reference_space(
                 read, row["start"], row["end"], row["type"]
             )
+            if row["type"] == "deletion":
+                qstart = -1
+                qend = -1
+            else:
+                qstart, qend = self.map_pairwise_space_to_query_space(
+                    read, row["start"], row["end"], row["type"]
+                )
+            query_start.append(qstart)
+            query_end.append(qend)
             ref_start.append(start)
             ref_end.append(end)
         df["start"] = ref_start
         df["end"] = ref_end
+        df["qstart"] = query_start
+        df["qend"] = query_end
         return df
 
     def filter_events(
@@ -175,7 +216,14 @@ class PysamCheck:
             "_".join(
                 [
                     str(row[x])
-                    for x in ["seqnames", "type", "originally", "replacement", "start", "end"]
+                    for x in [
+                        "seqnames",
+                        "type",
+                        "originally",
+                        "replacement",
+                        "start",
+                        "end",
+                    ]
                 ]
             )
             for _, row in events.iterrows()
@@ -203,36 +251,88 @@ class PysamCheck:
                     filtered.append(ev)
                 else:
                     pass  # discard as the reads do not agree
-        res = pd.concat(filtered)
-        return res
+        if len(filtered) > 0:
+            res = pd.concat(filtered)
+            return res
+        else:
+            return None
 
     def tally_reads(self, sample: Sample):
-        """group all mate pairs together and tally the number of idential reads"""
+        """
+        Group all mate pairs together and tally the number of idential reads.
+        Orphan reads or such with unusable cigar string are discarded.
+        """
 
         def __count():
             tmp_dict = {}
             with pysam.AlignmentFile(sample.bam_filename, "rb") as sam:
                 for read in sam.fetch():  # only mapped reads
-                    if read.is_unmapped:
-                        if read.query_name in tmp_dict:
-                            tmp_dict[read.query_name].append(read)
-                        else:
-                            tmp_dict[read.query_name] = [read]
+                    if read.query_name in tmp_dict:
+                        tmp_dict[read.query_name].append(read)
+                    else:
+                        tmp_dict[read.query_name] = [read]
             counter = collections.Counter()
             read_dict = {}
             for name in tmp_dict:
                 rs = tmp_dict[name]
                 if self.paired and len(rs) != 2:
+                    continue  # no orphans
+                not_usable = any(
+                    [(r.cigarstring is None or r.cigarstring == "") for r in rs]
+                )
+                if not_usable:
                     continue
-                seqs = []
-                for r in rs:
-                    seqs.append(r.get_forward_sequence())
-                key = tuple(seqs)
+                key = tuple([r.get_forward_sequence() for r in rs])
                 counter[key] += 1
                 read_dict[key] = tuple(rs)  # we need only one pair if we count them
             return counter, read_dict
 
         return __count()
+
+    def tally(self, sample: Sample, result_dir: Path = None):
+        if result_dir is None:
+            result_dir = sample.result_dir
+        else:
+            result_dir = result_dir
+        result_dir.mkdir(exist_ok=True, parents=True)
+        outfile3 = result_dir / f"Pycheck_{sample.name}_tallied_reads.tsv"
+        outfile4 = result_dir / f"Pycheck_{sample.name}_tallied_reads.bam"
+        outfile5 = result_dir / f"Pycheck_{sample.name}_tallied_reads_ns.bam"
+
+        def __count():
+            counter, read_dict = self.tally_reads(sample)
+            print(sample.bam_filename)
+            samfile = pysam.AlignmentFile(sample.bam_filename, "rb")
+            print(samfile.header)
+            running = 0
+            with tempfile.NamedTemporaryFile() as tmp:
+                tallied_bam = pysam.AlignmentFile(tmp, "wb", header=samfile.header)
+                with outfile3.open("w") as outp:
+                    outp.write("Sequence\tCount\n")
+                    for order, (seq_tuple, counts) in enumerate(counter.most_common()):
+                        reads = read_dict[seq_tuple]
+                        #                        counts = counter[seq_tuple]
+                        running += counts
+                        for read in reads:
+                            # add count as a tag
+                            read.set_tag("RC", counts, "i")
+                            read.set_tag("OD", order, "i")
+                            # write the reads
+                            tallied_bam.write(read)
+                        outp.write(",".join(list(seq_tuple)) + f"\t{counts}\n")
+                tallied_bam.close()
+                pysam.sort("-o", str(outfile4), tmp.name)
+                pysam.index(str(outfile4))
+                pysam.sort("-n", "-o", str(outfile5), tmp.name)
+            print(running)
+
+        #            raise ValueError()
+        return (
+            ppg.MultiFileGeneratingJob([outfile3, outfile4], __count)
+            .depends_on(sample.load())
+            .depends_on(self.get_dependencies())
+            .depends_on(self.__set_primer_range())
+        )
 
     def count_events(self, sample: Sample, result_dir: Path = None):
         """
@@ -242,9 +342,10 @@ class PysamCheck:
             result_dir = sample.result_dir
         else:
             result_dir = result_dir
+        result_dir.mkdir(exist_ok=True, parents=True)
         outfile = result_dir / f"Pycheck_{sample.name}_per_read.tsv"
         outfile2 = result_dir / f"Pycheck_{sample.name}_per_event.tsv"
-        outfile3 = result_dir / f"Pycheck_{sample.name}_tallied_reads.tsv"
+        infile5 = result_dir / f"Pycheck_{sample.name}_tallied_reads_ns.bam"
 
         def __count():
             per_read = {
@@ -253,6 +354,7 @@ class PysamCheck:
                 "Type": [],
                 "Count": [],
                 "Info": [],
+                "Read sequence": [],
             }
             per_event_columns = [
                 "Sample",
@@ -263,27 +365,30 @@ class PysamCheck:
                 "Original",
                 "Replacement",
             ]
-            counter, read_dict = self.tally_reads(sample)
             counter_events = collections.Counter()
-            with outfile3.open("w") as outp:
-                outp.write("Sequence\tCount\n")
-                for seq_tuple in read_dict:
-                    reads = read_dict[seq_tuple]
-                    for r in reads:
-                        if r.cigarstring is None or r.cigarstring == "":
-                            continue
-                    counts = counter[seq_tuple]
-                    outp.write(",".join(list(seq_tuple)) + f"\t{counts}\n")
+            no_events = 0
+            filtered_out = 0
+            with pysam.AlignmentFile(infile5, "rb") as tallied:
+                iterator = tallied.fetch(until_eof=True)
+                for read in iterator:
+                    reads = read
+                    if sample.is_paired:
+                        mate = iterator.__next__()  # tallied.fetch(until_eof=True)
+                        assert read.get_tag("OD") == mate.get_tag("OD")
+                        reads = (read, mate)
+                    counts = read.get_tag("RC")
                     events = self.extract_events(reads, counts)
                     if events is None:
+                        no_events += 1
                         continue
                     # remap event coordinates to reference space
                     events = self.map_events_to_reference_space(events, reads)
-                    events = self.filter_events(events, sample.is_paired, reads)
-                    if len(events) == 0:
+                    filtered = self.filter_events(events, sample.is_paired, reads)
+                    if filtered is None:
+                        filtered_out += 1
                         continue
                     info = []
-                    for _, row in events.iterrows():
+                    for _, row in filtered.iterrows():
                         event_info = [sample.name] + [
                             str(row[x])
                             for x in [
@@ -295,45 +400,83 @@ class PysamCheck:
                                 "replacement",
                             ]
                         ]
-                        counter_events[tuple(event_info)] += 1
+                        counter_events[tuple(event_info)] += row["counts"]
                         info.append(
-                            f"(type:{row['type']},start={row['start']},end={row['end']},original={row['originally']},replacement={row['replacement']})"
+                            "_".join(
+                                [
+                                    row["type"],
+                                    str(row["start"]),
+                                    str(row["end"]),
+                                    row["originally"],
+                                    row["replacement"],
+                                    str(row["qstart"]),
+                                    str(row["qend"]),
+                                ]
+                            )
                         )
-                    if len(events) > 1:
+                    if len(filtered) > 1:
                         event_type = "multi"
                     else:
-                        event_type = events["type"].values[0]
+                        event_type = filtered["type"].values[0]
+                    read_seq = []
+                    for read_id, filtered_part in filtered.groupby("read_id"):
+                        qstarts = [x for x in filtered_part["qstart"].values if x >= 0]
+                        r_start = 0 if len(qstarts) == 0 else min(qstarts)
+                        qends = [x for x in filtered_part["qend"].values if x >= 0]
+                        r_end = 0 if len(qends) == 0 else max(qends) + 1
+                        seq_index = int(read_id[1]) - 1
+                        read_seq.append(
+                            reads[seq_index].get_forward_sequence()[r_start:r_end]
+                        )
                     per_read["Sample"].append(sample.name)
-                    per_read["Reference"].append(events["seqnames"].values[0])
+                    per_read["Reference"].append(filtered["seqnames"].values[0])
                     per_read["Type"].append(event_type)
-                    per_read["Count"].append(events["counts"].values[0])
-                    per_read["Info"].append(";".join(info))
-                per_read = pd.DataFrame(per_read)
-                per_event = pd.DataFrame(
-                    list(counter_events.keys()), columns=per_event_columns
-                )
-                per_event["Counts"] = list(counter_events.values())
-                per_read.to_csv(outfile, sep="\t", index=False)
-                per_event.to_csv(outfile2, sep="\t", index=False)
-        return ppg.MultiFileGeneratingJob([outfile, outfile2, outfile3], __count).depends_on(
-            sample.load()
-        ).depends_on(self.get_dependencies()).depends_on(self.__set_primer_range())
+                    per_read["Count"].append(filtered["counts"].values[0])
+                    per_read["Info"].append(",".join(info))
+                    per_read["Read sequence"].append(",".join(read_seq))
+            per_read = pd.DataFrame(per_read)
+            per_event = pd.DataFrame(
+                list(counter_events.keys()), columns=per_event_columns
+            )
+            per_event["Counts"] = list(counter_events.values())
+            # add no events
+            row_df = pd.DataFrame(
+                [
+                    [sample.name, "", "", "", "No event", "", "", no_events],
+                    [sample.name, "", "", "", "Filtered out", "", "", no_events],
+                ],
+                columns=per_event_columns + ["Counts"],
+            )
+            per_event = pd.concat([row_df, per_event], ignore_index=True)
+            per_read.to_csv(outfile, sep="\t", index=False)
+            per_event.to_csv(outfile2, sep="\t", index=False)
+
+        return (
+            ppg.MultiFileGeneratingJob([outfile, outfile2], __count)
+            .depends_on(sample.load())
+            .depends_on(self.get_dependencies())
+            .depends_on(self.__set_primer_range())
+            .depends_on(self.tally(sample, result_dir))
+        )
 
     def map_pairwise_space_to_reference_space(
         self, read: AlignedSegment, start: int, end: int, eventtype: str
     ):
         """Maps the pairwise space coordinates to reference space for insertions"""
+        offset = 0
+        if read.cigartuples[0][0] in [4]:
+            offset = read.cigartuples[0][1]
         if eventtype == "insertion":
             alinged_pairs = read.get_aligned_pairs()
             try:
-                ref_start = alinged_pairs[start - 1][1]
+                ref_start = alinged_pairs[start - 1 + offset][1]
             except IndexError:
                 if start == 0:
                     ref_start = read.reference_start - 1
                 else:
                     raise
             try:
-                ref_end = alinged_pairs[end + 1][1]
+                ref_end = alinged_pairs[end + 1 + offset][1]
             except IndexError:
                 if end >= len(alinged_pairs):
                     ref_end = 1 + np.max(read.get_reference_positions())
@@ -343,8 +486,28 @@ class PysamCheck:
             ref_start = start
             ref_end = end
         elif eventtype == "mismatch":
-            ref_start = read.get_aligned_pairs()[start][1]
-            ref_end = ref_start        
+            ref_start = read.get_aligned_pairs()[start + offset][1]
+            ref_end = ref_start
+        else:
+            raise NotImplementedError()
+        return ref_start, ref_end
+
+    def map_pairwise_space_to_query_space(
+        self, read: AlignedSegment, start: int, end: int, eventtype: str
+    ):
+        """Maps the pairwise space coordinates to query space for insertions/mismatches"""
+        offset = 0
+        if read.cigartuples[0][0] in [4]:
+            offset = read.cigartuples[0][1]
+        if eventtype == "insertion":
+            alinged_pairs = read.get_aligned_pairs()
+            ref_start = alinged_pairs[start + offset][0]
+            ref_end = alinged_pairs[end + offset][0]
+        elif eventtype == "deletion":
+            raise ValueError("Deletions are not in the query")
+        elif eventtype == "mismatch":
+            ref_start = read.get_aligned_pairs()[start + offset][0]
+            ref_end = ref_start
         else:
             raise NotImplementedError()
         return ref_start, ref_end
@@ -360,7 +523,7 @@ class PysamCheck:
         seqnames: List[str],
         strands: List[str],
         counts: List[int],
-    ):
+    ) -> Union[DataFrame, None]:
         ro.r("library(amplican)")
         events_granges = ro.r(
             """
@@ -460,9 +623,6 @@ class PysamCheck:
             GenomeInfoDb::seqlevels(del) <- seqnames
             GenomeInfoDb::seqlevels(ins) <- seqnames
             ret = c(mm, del, ins)
-            if (length(ret) == 0){
-                ret = NULL
-            }
         }
         """
         )(
@@ -476,9 +636,21 @@ class PysamCheck:
             ro.vectors.StrVector(strands),
             ro.vectors.IntVector(counts),
         )
-        if events_granges == ro.rinterface.NULL:
+        events_df = ro.r(
+            """
+            function(events){
+                l = length(events)
+                if (l == 0) {
+                    NULL
+                }
+                else {
+                    as.data.frame(events, row.names=c(1:l))
+                }
+            }
+            """
+        )(events_granges)
+        if events_df == ro.r("NULL"):
             return None
-        events_df = ro.r("function(events){as.data.frame(events, row.names=c(1:length(events)))}")(events_granges)
         events_df = mbf_r.convert_dataframe_from_r(events_df)
         events_df = events_df.astype({"seqnames": "str"})
         events_df = events_df.reset_index()

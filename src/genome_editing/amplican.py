@@ -15,6 +15,7 @@ import mbf_r
 import rpy2.robjects as ro
 import rpy2.robjects.numpy2ri as numpy2ri
 import time
+import pysam
 
 __author__ = "Marco Mernberger"
 __copyright__ = "Copyright (c) 2020 Marco Mernberger"
@@ -23,7 +24,11 @@ __license__ = "mit"
 
 class Amplican:
     def __init__(
-        self, name: str = None, min_freq: float = 0.01, normalize_by=["guideRNA", "Group"], **kwargs
+        self,
+        name: str = None,
+        min_freq: float = 0.01,
+        normalize_by=["guideRNA", "Group"],
+        **kwargs,
     ) -> None:
         """
         Wrapper class for the AmpliCan tool.
@@ -127,7 +132,6 @@ class Amplican:
             df = df_loading_function()
             df.to_csv(outfile, index=False)
 
-        fi = ppg
         return ppg.FileGeneratingJob(outfile, __dump).depends_on(dependencies)
 
     def prepare_fastqs(
@@ -182,7 +186,7 @@ class Amplican:
         dependencies: List[Job] = [],
     ) -> Job:
         """
-        Runs AmpliCan for aall lanes given.
+        Runs AmpliCan for all lanes given.
 
         Since the amplican run needs a config file for each run, a dataframe
         containing the following columns must be supplied:
@@ -298,9 +302,139 @@ class Amplican:
             ro.vectors.StrVector(strands),
             ro.vectors.IntVector(counts),
         )
-        events_df = ro.r("function(events){as.data.frame(events, row.names=c(1:length(events)))}")(events_granges)
+        events_df = ro.r(
+            "function(events){as.data.frame(events, row.names=c(1:length(events)))}"
+        )(events_granges)
         events_df = mbf_r.convert_dataframe_from_r(events_df)
-        events_df = events_df.astype({'seqnames': 'str'})
+        events_df = events_df.astype({"seqnames": "str"})
         events_df = events_df.reset_index()
         return events_df
 
+    @classmethod
+    def write_top_x_alignments(
+        self,
+        output_file: Union[str, Path],
+        result_dir: Path,
+        x: int = 50,
+        dependencies: List[Job] = [],
+    ):
+        """
+        Gets the x most common alignments per sample and writes it to file.
+
+        Parameters
+        ----------
+        output_file : Union[str, Path]
+            Output file name or path.
+        result_dir : Path
+            Amplican result dir, where the alignment folder is located.
+        x : int, optional
+            Number of most common alignments to collect, by default 50.
+        dependencies : List[Job]
+            Job dependencies.
+        """
+        if isinstance(output_file, str):
+            outfile = Path(output_file)
+        else:
+            outfile = output_file
+        outfile.parent.mkdir(parents=True, exist_ok=True)
+
+        def __write():
+            return self.get_top_x_alignments(result_dir, x)
+
+        return ppg.FileGeneratingJob(outfile, __write).depends_on(
+            dependencies
+        )
+
+    @classmethod
+    def get_top_x_alignments(self, result_dir: Path, x: int):
+        """
+        Gets the x most common alignments per sample and returns it in a
+        dataframe.
+
+        Parameters
+        ----------
+        result_dir : Path
+            Amplican result dir, where the alignment folder is located.
+        x : int, optional
+            Number of most common alignments to collect, by default 50.
+        """
+        to_df: Dict[str, List] = {
+            "ID": [],
+            "Count": [],
+            "Sequence": [],
+            "Reference": [],
+        }
+        current_id = None
+        with (result_dir / "alignments" / "alignments.txt").open("r") as inp:
+            for next_id, count, seq, ref in next_4(inp):
+                if next_id != current_id:
+                    counter = 0
+                    current_id = next_id
+                if counter < x:
+                    to_df["ID"].append(next_id)
+                    to_df["Count"].append(count)
+                    to_df["Sequence"].append(seq)
+                    to_df["Reference"].append(ref)
+        return pd.DataFrame(to_df)
+
+"""
+def create_bam_from_alignments(sample_name, output_file: Union[str, Path], result_dirs: Dict[str, Path], genome: Genome, dependencies: List[Job] = []):
+    if isinstance(output_file, str):
+        outfile = Path(output_file)
+    else:
+        outfile = output_file
+    outfile.parent.mkdir(parents=True, exist_ok=True)
+
+    def get_aligned_segment(reference_name: str, reference_id: str, chrm_name: str, next_id, count, seq, ref):
+        segment = pysam.AlignedSegment()
+        segment.query_name = f"Alignment_{next_id}_{no}_{count}"
+        segment.query_sequence = seq.replace("-", "")
+        segment.reference_id = 0
+        
+        a.flag = 99
+    a.reference_start = 32
+    a.mapping_quality = 20
+    a.cigar = ((0,10), (2,1), (0,25))
+    a.next_reference_id = 0
+    a.next_reference_start=199
+    a.template_length=167
+    a.query_qualities = pysam.qualitystring_to_array("<<<<<<<<<<<<<<<<<<<<<:<9/,&,22;;<<<")
+    a.tags = (("NM", 1),
+              ("RG", "L1"))
+    def build_pysam():
+        # make header
+        sq = []
+        for chrname, len in genome.get_chromosome_lengths():
+            sq.append({"LN": len, "SN": chrname})
+        header = {'HD': {'VN': '1.0'}, 'SQ': sq}
+        for chrmname in result_dirs:
+            result_dir = result_dirs[chrmname]
+            with (result_dir / "alignments" / "alignments.txt").open("r") as inp:
+        
+        
+        
+        with pysam.AlignmentFile(outfile, "wb", header=header) as outf:
+                for no, (next_id, count, seq, ref) in enumerate(next_4(inp)):
+                    if next_id != sample_name:
+    outf.write(a)
+
+    return ppg.FileGeneratingJob(outfile, __dump).depends_on(dependencies)    
+"""
+
+def next_4(inp):
+    row1 = inp.readline()
+    row2 = inp.readline()
+    row3 = inp.readline()
+    inp.readline()
+    while row1:
+        splits = row1[-1].split()
+        print(splits)
+        next_id = splits[1]
+        count = splits[5]
+        ref = row2[:-1]
+        seq = row3[:-1]
+        yield (next_id, count, seq, ref)
+        row1 = inp.readline()
+        row2 = inp.readline()
+        row3 = inp.readline()
+        inp.readline()

@@ -1,0 +1,7 @@
+1_HPRT1	incoming	gene	1	313	.	+	.	gene_id "HPRT1"; gene_name "HPRT1"; gene_biotype "protein";
+2_TLR	incoming	gene	1	346	.	+	.	gene_id "Reporter"; gene_name "Reporter"; gene_biotype "protein";
+1_HPRT1	incoming	transcript	1	313	.	+	.	gene_id "HPRT1"; transcript_id "HPRT1.1"; transcript_name "HPRT1.1"; transcript_biotype "protein";
+2_TLR	incoming	transcript	1	346	.	+	.	gene_id "Reporter"; transcript_id "Reporter.1"; transcript_name "HPRT1.1"; transcript_biotype "protein";
+1_HPRT1	incoming	exon	1	313	.	+	.	gene_id "HPRT1"; transcript_id "HPRT1.1"; exon_number "1"; gene_name "HPRT1"; gene_source "incoming"; gene_biotype "protein"; transcript_name "HPRT1.1"; transcript_source "incoming"; transcript_biotype "protein"; exon_id "HPRT1.1.1";
+2_TLR	incoming	exon	1	313	.	+	.	gene_id "Reporter"; transcript_id "Reporter.1"; exon_number "1"; gene_name "Reporter"; gene_source "incoming"; gene_biotype "protein"; transcript_name "Reporter.1"; transcript_source "incoming"; transcript_biotype "protein"; exon_id "Reporter.1.1";
+

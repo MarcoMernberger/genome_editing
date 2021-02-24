@@ -76,6 +76,18 @@ def test_tally_reads(checknormal, tlane):
         assert isinstance(aligned_segment_tuple[1], pysam.AlignedSegment)
 
 
+def test_get_homology(checknormal):
+    deletion = "ATCGCT"
+    flanking_forward = "ATGGGG"
+    flanking_reverse = "GGGCT"
+    hom1 = checknormal._get_homology(deletion, flanking_forward, "")
+    hom2 = checknormal._get_homology(deletion, "", flanking_reverse)
+    hom3 = checknormal._get_homology(deletion, flanking_forward, flanking_reverse)
+    assert hom1 == "AT"
+    assert hom2 == "GCT"
+    assert hom3 == hom2
+
+"""
 def test_eval(checknormal):
     cigars = ['9S128=28D6=1I3=5I99=', '95=28D6=1I3=5I28=1X100=11S'] 
     aln_pos_start = [11, 44] 
@@ -118,3 +130,4 @@ def test_eval(checknormal):
     for _, row in events.iterrows():s
         assert index seqnames  start  end  ...       type read_id score counts
     raise ValueError()
+"""

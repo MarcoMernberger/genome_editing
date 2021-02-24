@@ -22,6 +22,7 @@ import rpy2.robjects as ro
 import rpy2.robjects.numpy2ri as numpy2ri
 import subprocess
 import tempfile
+import os
 
 __author__ = "Marco Mernberger"
 __copyright__ = "Copyright (c) 2020 Marco Mernberger"
@@ -177,7 +178,7 @@ class PysamCheck:
             mapq,
             seqnames,
             strands,
-            [counts] * len(cigars),
+            [counts],  #  * len(cigars),
         )
         return events
 
@@ -334,6 +335,73 @@ class PysamCheck:
             .depends_on(self.__set_primer_range())
         )
 
+    def _get_homology(
+        self, deletion: str, flanking_forward: str, flanking_reverse: str
+    ):
+        hom1 = os.path.commonprefix([deletion, flanking_forward])
+        hom2 = os.path.commonprefix([deletion[::-1], flanking_reverse[::-1]])[::-1]
+        homologies = [hom1, hom2]
+        i = np.argmax(homologies)
+        longest_homology = homologies[i]
+        return longest_homology
+
+    def write_microhomologies(self, sample: Sample, result_dir: Path):
+        result_dir.mkdir(exist_ok=True, parents=True)
+        outfile = result_dir / f"Pycheck_{sample.name}_microhomologies.tsv"
+        infile = result_dir / f"Pycheck_{sample.name}_tallied_reads_ns.bam"
+        infile_per_read = result_dir / f"Pycheck_{sample.name}_per_read.tsv"
+
+        def __write():
+            to_df = {
+                "Read id": [],
+                "Deletion": [],
+                "Microhomology": [],
+                "Count": [],
+                "Reference": [],
+            }
+            read_dict = {}
+            with pysam.AlignmentFile(infile, "rb") as tallied:
+                iterator = tallied.fetch(until_eof=True)
+                for read in iterator:
+                    reads = read
+                    if sample.is_paired:
+                        mate = iterator.__next__()  # tallied.fetch(until_eof=True)
+                        assert read.get_tag("OD") == mate.get_tag("OD")
+                        reads = (read, mate)
+                        read_dict[read.query_name] = reads
+            df_allread = pd.read_csv(infile_per_read, sep="\t")
+            for reference, df_read in df_allread.groupby("Reference"):
+                for _, row in df_read.iterrows():
+                    event_type = row["Type"]
+                    if event_type != "deletion":
+                        continue
+                    events = row["Info"].split(",")
+                    if len(events) > 1:
+                        raise ValueError(
+                            "Deletion should only contain 1 depetion event."
+                        )
+                    _, del_start, del_end, original, _, _, _ = events[0].split("_")
+                    read_id = row["Read id"]
+                    reads = read_dict[read_id]
+                    del_start = int(del_start) 
+                    del_end = int(del_end) + 1
+                    after_deletion = self._ref_lookup[row["Reference"]][del_end:]
+                    before_deletion = self._ref_lookup[row["Reference"]][:del_start]
+                    homology = self._get_homology(
+                        original, after_deletion, before_deletion
+                    )
+                    counts = reads[0].get_tag("RC")
+                    to_df["Read id"].append(read_id)
+                    to_df["Deletion"].append(original)
+                    to_df["Microhomology"].append(homology)
+                    to_df["Count"].append(counts)
+                    to_df["Reference"].append(reference)
+            df = pd.DataFrame(to_df)
+            df.to_csv(outfile, sep="\t", index=False)
+
+        dep = [self.tally(sample, result_dir), self.count_events(sample, result_dir), self.__set_primer_range()]
+        return ppg.FileGeneratingJob(outfile, __write).depends_on(dep)
+
     def count_events(self, sample: Sample, result_dir: Path = None):
         """
         Creates two tables, first one includes a per-read event count, the second one counts each event separately.
@@ -350,6 +418,7 @@ class PysamCheck:
         def __count():
             per_read = {
                 "Sample": [],
+                "Read id": [],
                 "Reference": [],
                 "Type": [],
                 "Count": [],
@@ -379,13 +448,13 @@ class PysamCheck:
                     counts = read.get_tag("RC")
                     events = self.extract_events(reads, counts)
                     if events is None:
-                        no_events += 1
+                        no_events += counts
                         continue
                     # remap event coordinates to reference space
                     events = self.map_events_to_reference_space(events, reads)
                     filtered = self.filter_events(events, sample.is_paired, reads)
                     if filtered is None:
-                        filtered_out += 1
+                        filtered_out += counts
                         continue
                     info = []
                     for _, row in filtered.iterrows():
@@ -400,7 +469,7 @@ class PysamCheck:
                                 "replacement",
                             ]
                         ]
-                        counter_events[tuple(event_info)] += row["counts"]
+                        counter_events[tuple(event_info)] += counts
                         info.append(
                             "_".join(
                                 [
@@ -430,8 +499,9 @@ class PysamCheck:
                         )
                     per_read["Sample"].append(sample.name)
                     per_read["Reference"].append(filtered["seqnames"].values[0])
+                    per_read["Read id"].append(reads[0].query_name)
                     per_read["Type"].append(event_type)
-                    per_read["Count"].append(filtered["counts"].values[0])
+                    per_read["Count"].append(counts)
                     per_read["Info"].append(",".join(info))
                     per_read["Read sequence"].append(",".join(read_seq))
             per_read = pd.DataFrame(per_read)
@@ -443,7 +513,7 @@ class PysamCheck:
             row_df = pd.DataFrame(
                 [
                     [sample.name, "", "", "", "No event", "", "", no_events],
-                    [sample.name, "", "", "", "Filtered out", "", "", no_events],
+                    [sample.name, "", "", "", "Filtered out", "", "", filtered_out],
                 ],
                 columns=per_event_columns + ["Counts"],
             )

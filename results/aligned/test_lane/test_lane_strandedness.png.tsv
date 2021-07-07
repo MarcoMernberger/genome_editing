@@ -1,0 +1,6 @@
+	what	count	sample
+0	outside	10	test_lane
+1	intron_correct	0	test_lane
+2	intron_reversed	0	test_lane
+3	exon_correct	0	test_lane
+4	exon_reversed	0	test_lane

@@ -6,7 +6,10 @@ import time
 import random
 import docker
 import pypipegraph as ppg
+import mbf_align
+import mbf_genomes
 from pathlib import Path
+from typing import List, Any
 
 
 class Crispresso2:
@@ -20,6 +23,7 @@ class Crispresso2:
     [type]
         [description]
     """
+
     def __init__(self, fastq_dir="/project/incoming"):
         self.image = "pinellolab/crispresso2"
         self.wdir = "/project"
@@ -53,11 +57,11 @@ class Crispresso2:
 
     def crispresso_run(
         self,
-        raw_sample,
-        amplicon_region,
-        sgrna,
+        raw_sample: mbf_align.raw.Sample,
+        amplicon_regions: List[List[Any]],
+        sgrnas: List[str],
         genome,
-        name=None,
+        names: List[str] = None,
         output_folder=None,
         quantification_window_size=10,
         quantification_window_center=-3,
@@ -65,22 +69,31 @@ class Crispresso2:
         options={},
     ):
         inputfiles = raw_sample.get_aligner_input_filenames()
-        if name is None:
-            name = f"{raw_sample.name.replace('.', '_')}_{sgrna}"
+        if names is None:
+            names = []
+            for sg in sgrnas:
+                names.append(f"{raw_sample.name.replace('.', '_')}_{sg}")
         outputfolder = output_folder
         if outputfolder is None:
             outputfolder = f"results/crispresso_{self.get_version()}/{raw_sample.name}"
         if isinstance(outputfolder, str):
             outputfolder = Path(outputfolder)
+        aname = ",".join(names)
+        name = aname.replace(",", "_")
         output_file = f"CRISPResso_on_{name}"
         outfile = outputfolder / output_file
         outfile.parent.mkdir(parents=True, exist_ok=True)
-        chrm, start, stop = amplicon_region
-        amp_sequence = genome.get_genome_sequence(str(chrm), start, stop)
+        amp_sequences = []
+        for amplicon_region in amplicon_regions:
+            chrm, start, stop = amplicon_region
+            amp_sequence = genome.get_genome_sequence(str(chrm), start, stop)
+            amp_sequences.append(amp_sequence)
+        amp_sequence = ",".join(amp_sequences)
+        sgrna = ",".join(sgrnas)
         deps = dependencies
         deps.append(
             ppg.ParameterInvariant(
-                f"PI_{output_file}",
+                f"PI_{outfile}",
                 [
                     self.image,
                     self.volumes,
@@ -89,7 +102,9 @@ class Crispresso2:
                     quantification_window_center,
                     quantification_window_size,
                 ]
-                + amplicon_region,
+                + amplicon_regions
+                + sgrnas
+                + names,
             )
         )
         deps.append(raw_sample.prepare_input())
@@ -116,6 +131,8 @@ class Crispresso2:
                 str(outputfolder),
                 "-n",
                 name,
+                "-an",
+                aname,
             ]
             if raw_sample.is_paired:
                 command.extend(
@@ -139,6 +156,7 @@ class Crispresso2:
                     line = line.strip().decode("utf-8")
                     print(line)
                     outp.write(line)
+                outp.write("\n" + " ".join(command))
 
         job = ppg.FileGeneratingJob(outfile, __dump).depends_on(deps)
         job.cores_needed = 17

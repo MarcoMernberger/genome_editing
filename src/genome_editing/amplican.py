@@ -6,12 +6,11 @@
 from pathlib import Path
 from typing import Optional, Callable, List, Dict, Tuple, Any, Union
 from pypipegraph import Job
-from mbf_align import Sample
+from mbf.align import Sample
 from pandas import DataFrame
 from collections import defaultdict
 import pandas as pd
 import pypipegraph as ppg
-import mbf_r
 import rpy2.robjects as ro
 import rpy2.robjects.numpy2ri as numpy2ri
 import time
@@ -124,9 +123,7 @@ class Amplican:
             The job writing the file.
         """
         outfile.parent.mkdir(parents=True, exist_ok=True)
-        dependencies.append(
-            ppg.FunctionInvariant(f"prepare_config_{outfile}", df_loading_function)
-        )
+        dependencies.append(ppg.FunctionInvariant(f"prepare_config_{outfile}", df_loading_function))
 
         def __dump():
             df = df_loading_function()
@@ -134,9 +131,7 @@ class Amplican:
 
         return ppg.FileGeneratingJob(outfile, __dump).depends_on(dependencies)
 
-    def prepare_fastqs(
-        self, samples: Dict[str, Sample], fastq_folder: Path
-    ) -> List[Job]:
+    def prepare_fastqs(self, samples: Dict[str, Sample], fastq_folder: Path) -> List[Job]:
         """
         Returns a list of dependencies for the run job.
 
@@ -302,9 +297,9 @@ class Amplican:
             ro.vectors.StrVector(strands),
             ro.vectors.IntVector(counts),
         )
-        events_df = ro.r(
-            "function(events){as.data.frame(events, row.names=c(1:length(events)))}"
-        )(events_granges)
+        events_df = ro.r("function(events){as.data.frame(events, row.names=c(1:length(events)))}")(
+            events_granges
+        )
         events_df = mbf_r.convert_dataframe_from_r(events_df)
         events_df = events_df.astype({"seqnames": "str"})
         events_df = events_df.reset_index()
@@ -341,9 +336,7 @@ class Amplican:
         def __write():
             return self.get_top_x_alignments(result_dir, x)
 
-        return ppg.FileGeneratingJob(outfile, __write).depends_on(
-            dependencies
-        )
+        return ppg.FileGeneratingJob(outfile, __write).depends_on(dependencies)
 
     @classmethod
     def get_top_x_alignments(self, result_dir: Path, x: int):
@@ -376,6 +369,7 @@ class Amplican:
                     to_df["Sequence"].append(seq)
                     to_df["Reference"].append(ref)
         return pd.DataFrame(to_df)
+
 
 """
 def create_bam_from_alignments(sample_name, output_file: Union[str, Path], result_dirs: Dict[str, Path], genome: Genome, dependencies: List[Job] = []):
@@ -420,6 +414,7 @@ def create_bam_from_alignments(sample_name, output_file: Union[str, Path], resul
 
     return ppg.FileGeneratingJob(outfile, __dump).depends_on(dependencies)    
 """
+
 
 def next_4(inp):
     row1 = inp.readline()

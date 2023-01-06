@@ -4,8 +4,9 @@
 """pysam.py: Contains ...."""
 
 from typing import List, Dict, Tuple, Union
-from mbf_align.lanes import Sample
-from mbf_genomes import GenomeBase
+from mbf.align import Sample
+
+# from mbf_genomes import GenomeBase
 from pysam import AlignedSegment
 from pandas import DataFrame
 from pypipegraph import Job
@@ -14,10 +15,12 @@ import pandas as pd
 import pypipegraph as ppg
 import pysam
 import numpy as np
-import mbf_genomes
-import mbf_genomics
-import collections
-import mbf_r
+
+# import mbf_genomes
+# import mbf_genomics
+# import collections
+# import mbf_r
+import mbf
 import rpy2.robjects as ro
 import rpy2.robjects.numpy2ri as numpy2ri
 import subprocess
@@ -50,7 +53,9 @@ class PysamCheck:
         self.name = "PysamCheck"
         if name is not None:
             self.name = name
-        self.primers_or_range_by_amplicon = primers_or_range_by_amplicon_id  # events within primer ranges are not reported
+        self.primers_or_range_by_amplicon = (
+            primers_or_range_by_amplicon_id  # events within primer ranges are not reported
+        )
         self.event_window_by_amplicon = (
             event_window_by_amplicon  # reads need to span the event window
         )
@@ -78,9 +83,7 @@ class PysamCheck:
                 "__check_reads_spanning_windows", self.__check_reads_spanning_windows
             ),
             ppg.FunctionInvariant("__set_primer_range", self.__set_primer_range),
-            ppg.FunctionInvariant(
-                "_prepare_reference_lookup", self._prepare_reference_lookup
-            ),
+            ppg.FunctionInvariant("_prepare_reference_lookup", self._prepare_reference_lookup),
             self.genome.download_genome(),
         ]
         return deps
@@ -103,14 +106,10 @@ class PysamCheck:
         """set the range in which we report events"""
 
         def __set_range_from_primers():
-            if isinstance(
-                next(iter(self.primers_or_range_by_amplicon.values()))[0], str
-            ):
+            if isinstance(next(iter(self.primers_or_range_by_amplicon.values()))[0], str):
                 ranges: Dict[str, Tuple(int)] = {}
                 for amplicon in self.primers_or_range_by_amplicon:
-                    primer_forward, primer_reverse = self.primers_or_range_by_amplicon[
-                        amplicon
-                    ]
+                    primer_forward, primer_reverse = self.primers_or_range_by_amplicon[amplicon]
                     seq = self._ref_lookup[amplicon]
                     i1 = seq.find(primer_forward) + len(primer_forward)
                     i2 = seq.find(primer_reverse) + len(primer_reverse)
@@ -141,9 +140,7 @@ class PysamCheck:
             check = check and (min_pos < min(interval) & max_pos > max(interval))
         return check
 
-    def extract_events(
-        self, reads: Tuple[AlignedSegment], counts: int
-    ) -> Union[DataFrame, None]:
+    def extract_events(self, reads: Tuple[AlignedSegment], counts: int) -> Union[DataFrame, None]:
         """Turn a read or read pair into a set of events."""
         cigars = []
         aln_pos_start = []
@@ -163,9 +160,7 @@ class PysamCheck:
             seqnames.append(reference_name)
             if r.is_reverse:
                 strands.append("-")
-                query_seq.append(
-                    mbf_genomes.common.reverse_complement(r.get_forward_sequence())
-                )
+                query_seq.append(mbf_genomes.common.reverse_complement(r.get_forward_sequence()))
             else:
                 strands.append("+")
                 query_seq.append(r.get_forward_sequence())
@@ -209,9 +204,7 @@ class PysamCheck:
         df["qend"] = query_end
         return df
 
-    def filter_events(
-        self, events: DataFrame, is_paired: bool, reads: Tuple[AlignedSegment]
-    ):
+    def filter_events(self, events: DataFrame, is_paired: bool, reads: Tuple[AlignedSegment]):
         """Filter events"""
         keys = [
             "_".join(
@@ -240,10 +233,7 @@ class PysamCheck:
             amplicon = df_sub["seqnames"].values[0]
             interval = self.ranges_by_amplicon[amplicon]
             # throw out events beyond the range of interest
-            if (
-                df_sub["start"].values[0] < interval[0]
-                or df_sub["start"].values[0] > interval[1]
-            ):
+            if df_sub["start"].values[0] < interval[0] or df_sub["start"].values[0] > interval[1]:
                 continue
             event_type = df_sub["type"].values[0]
             if event_type in self.types_to_consider:
@@ -278,9 +268,7 @@ class PysamCheck:
                 rs = tmp_dict[name]
                 if self.paired and len(rs) != 2:
                     continue  # no orphans
-                not_usable = any(
-                    [(r.cigarstring is None or r.cigarstring == "") for r in rs]
-                )
+                not_usable = any([(r.cigarstring is None or r.cigarstring == "") for r in rs])
                 if not_usable:
                     continue
                 key = tuple([r.get_forward_sequence() for r in rs])
@@ -335,9 +323,7 @@ class PysamCheck:
             .depends_on(self.__set_primer_range())
         )
 
-    def _get_homology(
-        self, deletion: str, flanking_forward: str, flanking_reverse: str
-    ):
+    def _get_homology(self, deletion: str, flanking_forward: str, flanking_reverse: str):
         hom1 = os.path.commonprefix([deletion, flanking_forward])
         hom2 = os.path.commonprefix([deletion[::-1], flanking_reverse[::-1]])[::-1]
         homologies = [hom1, hom2]
@@ -377,19 +363,15 @@ class PysamCheck:
                         continue
                     events = row["Info"].split(",")
                     if len(events) > 1:
-                        raise ValueError(
-                            "Deletion should only contain 1 depetion event."
-                        )
+                        raise ValueError("Deletion should only contain 1 depetion event.")
                     _, del_start, del_end, original, _, _, _ = events[0].split("_")
                     read_id = row["Read id"]
                     reads = read_dict[read_id]
-                    del_start = int(del_start) 
+                    del_start = int(del_start)
                     del_end = int(del_end) + 1
                     after_deletion = self._ref_lookup[row["Reference"]][del_end:]
                     before_deletion = self._ref_lookup[row["Reference"]][:del_start]
-                    homology = self._get_homology(
-                        original, after_deletion, before_deletion
-                    )
+                    homology = self._get_homology(original, after_deletion, before_deletion)
                     counts = reads[0].get_tag("RC")
                     to_df["Read id"].append(read_id)
                     to_df["Deletion"].append(original)
@@ -399,7 +381,11 @@ class PysamCheck:
             df = pd.DataFrame(to_df)
             df.to_csv(outfile, sep="\t", index=False)
 
-        dep = [self.tally(sample, result_dir), self.count_events(sample, result_dir), self.__set_primer_range()]
+        dep = [
+            self.tally(sample, result_dir),
+            self.count_events(sample, result_dir),
+            self.__set_primer_range(),
+        ]
         return ppg.FileGeneratingJob(outfile, __write).depends_on(dep)
 
     def count_events(self, sample: Sample, result_dir: Path = None):
@@ -494,9 +480,7 @@ class PysamCheck:
                         qends = [x for x in filtered_part["qend"].values if x >= 0]
                         r_end = 0 if len(qends) == 0 else max(qends) + 1
                         seq_index = int(read_id[1]) - 1
-                        read_seq.append(
-                            reads[seq_index].get_forward_sequence()[r_start:r_end]
-                        )
+                        read_seq.append(reads[seq_index].get_forward_sequence()[r_start:r_end])
                     per_read["Sample"].append(sample.name)
                     per_read["Reference"].append(filtered["seqnames"].values[0])
                     per_read["Read id"].append(reads[0].query_name)
@@ -505,9 +489,7 @@ class PysamCheck:
                     per_read["Info"].append(",".join(info))
                     per_read["Read sequence"].append(",".join(read_seq))
             per_read = pd.DataFrame(per_read)
-            per_event = pd.DataFrame(
-                list(counter_events.keys()), columns=per_event_columns
-            )
+            per_event = pd.DataFrame(list(counter_events.keys()), columns=per_event_columns)
             per_event["Counts"] = list(counter_events.values())
             # add no events
             row_df = pd.DataFrame(

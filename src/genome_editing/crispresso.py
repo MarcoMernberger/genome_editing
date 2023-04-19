@@ -360,6 +360,117 @@ def CRISPResso2(
     )
 
 
+class Crispresso:
+    def __init__(self, output_folder: str = "results/crispresso"):
+        self.output_folder = Path(output_folder)
+        self._docker_command = [
+            "docker",
+            "run",
+            "-v",
+            "${ANYSNAKE2_PROJECT_DIR}:/project",
+            "-w",
+            "/project",
+            "-i",
+            "pinellolab/crispresso2",
+        ]
+
+    @property
+    def docker_command(self):
+        return self._docker_command
+
+    @docker_command.setter
+    def docker_command(self, docker_command: List[str]):
+        self._docker_command = docker_command
+
+    def call_crispresso2(
+        self,
+        report_name: str,
+        input_files: List[str],
+        df_amplicons: DataFrame,
+        output_folder: Path,
+        options: Optional[Dict[Any, Any]] = None,
+        quantification_window_size=10,
+        quantification_window_center=-3,
+    ):
+        amplicon_seq = ",".join(df_amplicons.Amplicon.values)
+        sgrnas = ",".join(df_amplicons.sgRNA.values)
+        amplicon_names = ",".join(df_amplicons.Gen.values)
+        command = self.docker_command + [
+            "CRISPResso",  # , "-h"]
+            "--fastq_r1",
+            str(input_files[0]),
+            "--amplicon_seq",
+            amplicon_seq,
+            "--guide_seq",
+            sgrnas,
+            "--quantification_window_size",
+            f"{quantification_window_size}",
+            "--quantification_window_center",
+            f"{quantification_window_center}",
+            "--base_editor_output",
+            "--exclude_bp_from_right",
+            "1",
+            "--exclude_bp_from_left",
+            "1",
+            "-o",
+            str(output_folder),
+            "-n",
+            report_name,
+            "-an",
+            amplicon_names,
+        ]
+        if len(input_files) == 2:
+            command.extend(
+                [
+                    "--fastq_r2",
+                    str(input_files[1]),
+                ]
+            )
+        if options is not None:
+            command.append(dict_to_string_of_items(options))
+        cmd = " ".join(command)
+        print(cmd)
+        try:
+            subprocess.run(cmd, shell=True)
+        except subprocess.CalledProcessError:
+            print(cmd)
+            raise
+
+    def run(
+        self,
+        report_name: str,
+        input_files: List[str],
+        df_amplicons: DataFrame,
+        additional_folder: Optional[Path] = None,
+        options: Optional[Dict[Any, Any]] = None,
+        quantification_window_size: int = 10,
+        quantification_window_center: int = -3,
+        dependencies: List[Job] = [],
+    ):
+        output_folder = self.output_folder
+        if additional_folder is not None:
+            output_folder = output_folder / additional_folder
+        output_folder.mkdir(parents=True, exist_ok=True)
+        filename = f"CRISPResso_on_{report_name}.html"
+        outfile = output_folder / filename
+
+        def __dump(output_file):
+
+            self.call_crispresso2(
+                report_name,
+                input_files,
+                df_amplicons,
+                output_folder,
+                options,
+                quantification_window_size,
+                quantification_window_center,
+            )
+
+        job = ppg.FileGeneratingJob(outfile, __dump).depends_on(dependencies)
+        job.cores_needed = 17  # we must do one after another because of docker ...
+        return job
+
+
 def call_crispresso2(
     report_name: str,
     input_files: List[str],
@@ -418,6 +529,7 @@ def call_crispresso2(
     if options is not None:
         command.append(dict_to_string_of_items(options))
     cmd = " ".join(command)
+    print(cmd)
     try:
         subprocess.run(cmd, shell=True)
     except subprocess.CalledProcessError:

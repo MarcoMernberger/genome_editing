@@ -16,6 +16,7 @@ from .crispresso import (
     write_amplicon_sequences_by_name,
     call_crispresso2,
     create_crispresso_input_frame,
+    Crispresso,
 )
 from .plots import *
 

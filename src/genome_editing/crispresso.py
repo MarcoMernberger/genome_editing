@@ -11,10 +11,14 @@ import subprocess
 from mbf.genomes.ensembl import _EnsemblGenome
 from mbf.align.raw import Sample
 from pathlib import Path
-from typing import List, Any, Union, Optional, Dict
+from typing import List, Any, Union, Optional, Dict, Callable
 from pandas import DataFrame
 from pypipegraph2 import Job
-from mutility import reverse_complement, dict_to_string_of_items, read_excel_from_biologists
+from mutility import (
+    reverse_complement,
+    dict_to_string_of_items,
+    read_excel_from_biologists,
+)
 
 
 def create_crispresso_input_frame(
@@ -74,10 +78,13 @@ def write_amplicon_sequences_by_name(
                 except ValueError:
                     try:
                         s = get_chromosome_sequence(gene.chr, genome)
-                        amplicon = get_amplicon_sequence(primer_fwd, primer_rev, s, sgrna)
+                        amplicon = get_amplicon_sequence(
+                            primer_fwd, primer_rev, s, sgrna
+                        )
                     except ValueError as err:
                         raise ValueError(
-                            str(err) + f"\nSearched chromosome {gene.chr} for {gene_name}."
+                            str(err)
+                            + f"\nSearched chromosome {gene.chr} for {gene_name}."
                         )
             else:
                 # this is not a gene, but a chromosome
@@ -99,7 +106,10 @@ def write_amplicon_sequences_by_name(
                 print("sgRNA: ", row["sgRNA"])
                 print("Amplicon: ", row["Amplicon"])
                 print("sgRNA in Amplicon?", row["sgRNA"] in row["Amplicon"])
-                print("sgRNA rev in Amplicon?", reverse_complement(row["sgRNA"]) in row["Amplicon"])
+                print(
+                    "sgRNA rev in Amplicon?",
+                    reverse_complement(row["sgRNA"]) in row["Amplicon"],
+                )
                 raise
 
         df_amplicons.to_csv(outfile, sep="\t", index=False)
@@ -111,7 +121,9 @@ def write_amplicon_sequences_by_name(
     )
 
 
-def get_amplicon_sequence(primer_fwd: str, primer_rev: str, sequence: str, sgrna: str) -> str:
+def get_amplicon_sequence(
+    primer_fwd: str, primer_rev: str, sequence: str, sgrna: str
+) -> str:
     primer_fwd_rev = reverse_complement(primer_fwd)
     primer_rev_rev = reverse_complement(primer_rev)
     if sgrna not in sequence:
@@ -136,9 +148,13 @@ def get_amplicon_sequence(primer_fwd: str, primer_rev: str, sequence: str, sgrna
     if match is None:
         if primer_fwd not in sequence:
             print("primer_fwd in sequence", primer_fwd in sequence)
-            print("primer_fwd rev in sequence", reverse_complement(primer_fwd) in sequence)
+            print(
+                "primer_fwd rev in sequence", reverse_complement(primer_fwd) in sequence
+            )
             print("primer_rev in sequence", primer_rev in sequence)
-            print("primer_rev rev in sequence", reverse_complement(primer_rev) in sequence)
+            print(
+                "primer_rev rev in sequence", reverse_complement(primer_rev) in sequence
+            )
             raise ValueError("Primer forward not in sequence.")
         elif primer_rev not in sequence:
             raise ValueError("Primer reverse not in sequence.")
@@ -147,10 +163,14 @@ def get_amplicon_sequence(primer_fwd: str, primer_rev: str, sequence: str, sgrna
         if len(match.groups()) == 1:
             return match.group("amplicon")
         else:
-            raise ValueError(f"Multiple possible amplicons detected!\n{match.groups()}.")
+            raise ValueError(
+                f"Multiple possible amplicons detected!\n{match.groups()}."
+            )
 
 
-def get_amplicon_sequences(primer_fwd: str, primer_rev: str, sequence: str, sgrna: str) -> str:
+def get_amplicon_sequences(
+    primer_fwd: str, primer_rev: str, sequence: str, sgrna: str
+) -> str:
     primer_fwd_rev = reverse_complement(primer_fwd)
     primer_rev_rev = reverse_complement(primer_rev)
     if sgrna not in sequence:
@@ -386,15 +406,29 @@ class Crispresso:
         self,
         report_name: str,
         input_files: List[str],
-        df_amplicons: DataFrame,
+        df_amplicons: Union[DataFrame, Callable],
         output_folder: Path,
         options: Optional[Dict[Any, Any]] = None,
         quantification_window_size=10,
         quantification_window_center=-3,
+        sample: Optional[str] = None,
     ):
+        if not isinstance(df_amplicons, DataFrame):
+            try:
+                df_amplicons = df_amplicons()
+            except TypeError:
+                raise TypeError("df_amplicons must be a DataFrame or a Callable.")
+        print(df_amplicons.Sample)
+        if sample is not None:
+            df_amplicons = df_amplicons[df_amplicons.Sample == sample]
+            if df_amplicons.shape[0] == 0:
+                print(df_amplicons.Sample)
+                print(sample)
+                raise ValueError(f"Could not find {sample} in df_amplicons")
+        print(sample)
         amplicon_seq = ",".join(df_amplicons.Amplicon.values)
         sgrnas = ",".join(df_amplicons.sgRNA.values)
-        amplicon_names = ",".join(df_amplicons.Gen.values)
+        amplicon_names = ",".join(df_amplicons.Sample.values)
         command = self.docker_command + [
             "CRISPResso",  # , "-h"]
             "--fastq_r1",
@@ -436,16 +470,95 @@ class Crispresso:
             print(cmd)
             raise
 
+    def call_crispresso2_PE(
+        self,
+        report_name: str,
+        input_files: List[str],
+        df_amplicons: Union[DataFrame, Callable],
+        output_folder: Path,
+        options: Optional[Dict[Any, Any]] = None,
+        sample: Optional[str] = None,
+        # quantification_window_size=10,
+        # quantification_window_center=-3,
+    ):
+        if not isinstance(df_amplicons, DataFrame):
+            try:
+                df_amplicons = df_amplicons()
+            except TypeError:
+                raise TypeError("df_amplicons must be a DataFrame or a Callable.")
+        if sample is not None:
+            df_amplicons = df_amplicons[df_amplicons.Sample == sample]
+            if df_amplicons.shape[0] == 0:
+                print(df_amplicons.Sample)
+                print(sample)
+                raise ValueError(f"Could not find {sample} in df_amplicons")
+        print(sample)
+        print("df_amplicons")
+        print(df_amplicons)
+        amplicon_seq = ",".join(df_amplicons.Amplicon.values)
+        amplicon_names = ",".join(df_amplicons.name.values)
+        prime_editing_pegRNA_spacer_seq = ",".join(df_amplicons.pegRNAspacer.values)
+        prime_editing_pegRNA_extension_seq = ",".join(
+            df_amplicons.pegRNAextension.values
+        )
+        prime_editing_pegRNA_scaffold_seq = ",".join(df_amplicons.pegRNAscaffold.values)
+        # nick_guide = ",".join(df_amplicons.nick.values)
+        output_folder.mkdir(parents=True, exist_ok=True)
+        command = self.docker_command + [
+            "CRISPResso",  # , "-h"]
+            "--fastq_r1",
+            str(input_files[0]),
+        ]
+        if len(input_files) == 2:
+            command.extend(
+                [
+                    "--fastq_r2",
+                    str(input_files[1]),
+                ]
+            )
+        command += [
+            "--amplicon_seq",
+            amplicon_seq,
+            "--prime_editing_pegRNA_spacer_seq",
+            f"{prime_editing_pegRNA_spacer_seq}",
+            "--prime_editing_pegRNA_extension_seq",
+            f"{prime_editing_pegRNA_extension_seq}",
+            "--prime_editing_pegRNA_scaffold_seq",
+            f"{prime_editing_pegRNA_scaffold_seq}",
+            # "--prime_editing_nicking_guide_seq",
+            # f"{nick_guide}",
+            "--write_cleaned_report",
+            "--output_folder",
+            str(output_folder),
+            "--name",
+            report_name,
+            "--amplicon_name",
+            f"{amplicon_names}",
+            "--debug",
+        ]
+        # if raw_sample.is_paired:
+        if options is not None:
+            command.append(dict_to_string_of_items(options))
+        cmd = " ".join(command)
+        print(cmd)
+        try:
+            subprocess.run(cmd, shell=True)
+        except subprocess.CalledProcessError:
+            print(cmd)
+            raise
+
     def run(
         self,
         report_name: str,
         input_files: List[str],
-        df_amplicons: DataFrame,
+        df_amplicons: Union[DataFrame, Callable],
         additional_folder: Optional[Path] = None,
         options: Optional[Dict[Any, Any]] = None,
         quantification_window_size: int = 10,
         quantification_window_center: int = -3,
+        mode="classic",
         dependencies: List[Job] = [],
+        sample: Optional[str] = None,
     ):
         output_folder = self.output_folder
         if additional_folder is not None:
@@ -455,16 +568,30 @@ class Crispresso:
         outfile = output_folder / filename
 
         def __dump(output_file):
-
-            self.call_crispresso2(
-                report_name,
-                input_files,
-                df_amplicons,
-                output_folder,
-                options,
-                quantification_window_size,
-                quantification_window_center,
-            )
+            if mode == "classic":
+                self.call_crispresso2(
+                    report_name,
+                    input_files,
+                    df_amplicons,
+                    output_folder,
+                    options,
+                    quantification_window_size,
+                    quantification_window_center,
+                    sample=sample,
+                )
+            elif mode == "prime_editing":
+                self.call_crispresso2_PE(
+                    report_name,
+                    input_files,
+                    df_amplicons,
+                    output_folder,
+                    options,
+                    # quantification_window_size,
+                    # quantification_window_center,
+                    sample=sample,
+                )
+            else:
+                raise ValueError("mode must be 'classic' or 'prime_editing'.")
 
         job = ppg.FileGeneratingJob(outfile, __dump).depends_on(dependencies)
         job.cores_needed = 17  # we must do one after another because of docker ...
@@ -517,6 +644,7 @@ def call_crispresso2(
         report_name,
         "-an",
         amplicon_names,
+        "--debug",
     ]
     # if raw_sample.is_paired:
     if len(input_files) == 2:

@@ -19,6 +19,7 @@ from .crispresso import (
     Crispresso,
 )
 from .plots import *
+from .mageck import Mageck
 
 # from .amplican import Amplican
 # from .pycheck import PysamCheck

@@ -470,6 +470,108 @@ class Crispresso:
             print(cmd)
             raise
 
+    def call_crispresso2_batch(
+        self,
+        report_name: str,
+        df_batch: Union[DataFrame, Callable],
+        output_folder: Path,
+        batch_file: Path,
+        options: Optional[Dict[Any, Any]] = None,
+        fastq_column: str = "fastq",
+        amplicon_column: str = "Amplicon",
+        sgRNA_column: str = "sgRNA",
+        sg_name_column: str = "g_names",
+        amplicon_names_column: str = "amplicon_names",
+        quantification_window_size: int = 10,
+        quantification_window_center: int = -10,
+    ):
+        if not isinstance(df_batch, DataFrame):
+            try:
+                df_amplicons = df_batch()
+            except TypeError:
+                raise TypeError("df_batch must be a DataFrame or a Callable.")
+        if (
+            "_R2_" in df_batch[fastq_column].values[0]
+            and "," in df_batch[fastq_column].values[0]
+        ):
+            df_batch[["r1", "r2"]] = df_batch[fastq_column].str.split(",", expand=True)
+            fastqs_r1 = ",".join(df_batch["r1"].astype(str).values)
+            fastqs_r2 = ",".join(df_batch["r2"].astype(str).values)
+        else:
+            df_batch["r1"] = df_batch[fastq_column]
+            fastqs_r1 = ",".join(df_batch[fastq_column].astype(str).values)
+            fastqs_r2 = False
+        amplicons = df_batch[amplicon_column].astype(str).values[0]
+        # amplicons = ",".join(df_batch[amplicon_column].astype(str).values)
+        sgrnas = ",".join(df_batch[sgRNA_column].astype(str).values)
+        sg_names = ",".join(df_batch[sg_name_column].astype(str).values)
+        # amplicon_names = ",".join(df_batch[amplicon_names_column].astype(str).values[0])
+        amplicon_names = df_batch[amplicon_names_column].astype(str).values[0]
+        output_folder.mkdir(parents=True, exist_ok=True)
+        command = self.docker_command + [
+            "CRISPRessoBatch",
+            "-r1",
+            fastqs_r1,
+        ]
+        if fastqs_r2:
+            command.extend(
+                [
+                    "-r2",
+                    fastqs_r2,
+                ]
+            )
+        command += [
+            "-a",
+            amplicons,
+            "-an",
+            amplicon_names,
+            "-g",
+            sgrnas,
+            "-n",
+            sg_names,
+            "-w",
+            str(quantification_window_size),
+            "-wc",
+            str(quantification_window_center),
+            "-bo",
+            str(output_folder),
+            "-bs",
+            str(batch_file),
+            "--name",
+            report_name,
+        ]
+        # if raw_sample.is_paired:
+        if options is not None:
+            command.append(dict_to_string_of_items(options))
+        print(command)
+        cmd = " ".join(command)
+        print(cmd)
+        try:
+            subprocess.run(cmd, shell=True)
+        except subprocess.CalledProcessError:
+            print(cmd)
+            raise
+
+    def dump_batch_file(
+        self,
+        df_batch: DataFrame,
+        sg_name_column: str,
+        fastq_column: str,
+        output_file: Path,
+    ):
+        """
+        Dumps the batch file to the output file.
+        """
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        if not isinstance(df_batch, DataFrame):
+            raise TypeError("df_batch must be a DataFrame.")
+        df_out = df_batch[[sg_name_column, fastq_column]].copy()
+        df_out = df_out.rename(columns={sg_name_column: "n", fastq_column: "r1"})
+        print(df_out.columns)
+        if "_R2_" in df_out["r1"].values[0] and "," in df_out["r1"].values[0]:
+            df_out[["r1", "r2"]] = df_out["r1"].str.split(",", expand=True)
+        df_out.to_csv(output_file, sep="\t", index=False)
+
     def call_crispresso2_PE(
         self,
         report_name: str,
@@ -481,6 +583,9 @@ class Crispresso:
         # quantification_window_size=10,
         # quantification_window_center=-3,
     ):
+        print(sample)
+        print("df_amplicons")
+        print(df_amplicons)
         if not isinstance(df_amplicons, DataFrame):
             try:
                 df_amplicons = df_amplicons()
@@ -492,9 +597,6 @@ class Crispresso:
                 print(df_amplicons.Sample)
                 print(sample)
                 raise ValueError(f"Could not find {sample} in df_amplicons")
-        print(sample)
-        print("df_amplicons")
-        print(df_amplicons)
         amplicon_seq = ",".join(df_amplicons.Amplicon.values)
         amplicon_names = ",".join(df_amplicons.name.values)
         prime_editing_pegRNA_spacer_seq = ",".join(df_amplicons.pegRNAspacer.values)
@@ -595,6 +697,71 @@ class Crispresso:
 
         job = ppg.FileGeneratingJob(outfile, __dump).depends_on(dependencies)
         job.cores_needed = 17  # we must do one after another because of docker ...
+        return job
+
+    def run_batch(
+        self,
+        report_name: str,
+        df_batch: DataFrame,
+        output_folder: Path,
+        batch_file: Path,
+        options: Optional[Dict[Any, Any]] = None,
+        dependencies: List[Job] = [],
+        additional_folder: Optional[Path] = None,
+        fastq_column: str = "fastq",
+        amplicon_column: str = "Amplicon",
+        sgRNA_column: str = "sgRNA",
+        sg_name_column: str = "g_names",
+        amplicon_names_column: str = "amplicon_names",
+        quantification_window_size: int = 10,
+        quantification_window_center: int = -10,
+    ):
+        output_folder = self.output_folder
+        if additional_folder is not None:
+            output_folder = output_folder / additional_folder
+        output_folder.mkdir(parents=True, exist_ok=True)
+        filename = f"CRISPResso_on_batch.html"
+        outfile = output_folder / filename
+
+        def __dump(output_file):
+            self.call_crispresso2_batch(
+                report_name,
+                df_batch,
+                output_folder,
+                batch_file,
+                options,
+                fastq_column,
+                amplicon_column,
+                sgRNA_column,
+                sg_name_column,
+                amplicon_names_column,
+                quantification_window_size,
+                quantification_window_center,
+            )
+
+        batch_file_job = self.create_batch_file(
+            batch_file, df_batch, fastq_column, sg_name_column, dependencies
+        )
+        job = (
+            ppg.FileGeneratingJob(outfile, __dump)
+            .depends_on(batch_file_job)
+            .depends_on(dependencies)
+        )
+        job.cores_needed = 17  # we must do one after another because of docker ...
+        return job
+
+    def create_batch_file(
+        self,
+        batch_file: Path,
+        df_batch: DataFrame,
+        fastq_column: str,
+        sg_name_column: str,
+        dependencies: List[Job] = [],
+    ):
+        def __dump():
+            self.dump_batch_file(df_batch, sg_name_column, fastq_column, batch_file)
+
+        job = ppg.FileGeneratingJob(batch_file, __dump).depends_on(dependencies)
         return job
 
 

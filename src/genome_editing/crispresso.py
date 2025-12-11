@@ -412,23 +412,28 @@ class Crispresso:
         quantification_window_size=10,
         quantification_window_center=-3,
         sample: Optional[str] = None,
+        # exclude_bp_from_right
+        # "--exclude_bp_from_right",
+        #     "1",
+        #     "--exclude_bp_from_left",
+        #     "1",    
     ):
         if not isinstance(df_amplicons, DataFrame):
             try:
                 df_amplicons = df_amplicons()
             except TypeError:
                 raise TypeError("df_amplicons must be a DataFrame or a Callable.")
-        print(df_amplicons.Sample)
+
+        print(sample, sample is None)
         if sample is not None:
             df_amplicons = df_amplicons[df_amplicons.Sample == sample]
             if df_amplicons.shape[0] == 0:
                 print(df_amplicons.Sample)
                 print(sample)
                 raise ValueError(f"Could not find {sample} in df_amplicons")
-        print(sample)
         amplicon_seq = ",".join(df_amplicons.Amplicon.values)
         sgrnas = ",".join(df_amplicons.sgRNA.values)
-        amplicon_names = ",".join(df_amplicons.Sample.values)
+        amplicon_names = ",".join(df_amplicons.Gen.values)
         command = self.docker_command + [
             "CRISPResso",  # , "-h"]
             "--fastq_r1",
@@ -442,10 +447,6 @@ class Crispresso:
             "--quantification_window_center",
             f"{quantification_window_center}",
             "--base_editor_output",
-            "--exclude_bp_from_right",
-            "1",
-            "--exclude_bp_from_left",
-            "1",
             "-o",
             str(output_folder),
             "-n",
